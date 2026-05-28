@@ -11,7 +11,7 @@
 #
 set -o pipefail
 
-# ─────────────────────────── НАСТРОЙКИ ───────────────────────────
+# НАСТРОЙКИ
 # Где искать
 SCAN_DIRS=(
     /etc/nginx
@@ -49,16 +49,24 @@ else
 fi
 
 # ─────────────────────────── ДОМЕН ───────────────────────────
-if [ -n "$1" ]; then
-    DOMAIN="$1"
-else
-    printf "${BOLD}Введите домен для поиска:${RESET} "
-    read -r DOMAIN
-fi
+DOMAIN="$1"
 
+# Если домен не передан аргументом — спрашиваем интерактивно.
+# Читаем из /dev/tty, чтобы работало и при запуске через
+# `bash <(curl ...)` и через `curl ... | bash`.
 if [ -z "$DOMAIN" ]; then
-    printf "${RED}Ошибка: домен не указан${RESET}\n" >&2
-    exit 1
+    if [ -r /dev/tty ]; then
+        while [ -z "$DOMAIN" ]; do
+            printf "${BOLD}Введите домен для поиска:${RESET} " > /dev/tty
+            if ! read -r DOMAIN < /dev/tty; then
+                printf "\n${RED}Ввод прерван.${RESET}\n" >&2
+                exit 1
+            fi
+        done
+    else
+        printf "${RED}Ошибка: домен не указан${RESET}\n" >&2
+        exit 1
+    fi
 fi
 
 # ─────────────────────────── ХЕЛПЕРЫ ───────────────────────────
@@ -70,8 +78,6 @@ plural_ru() {
     elif [ "$n10" -ge 2 ] && [ "$n10" -le 4 ];          then echo "совпадения"
     else echo "совпадений"; fi
 }
-
-# Прогресс-бар (рисуется в stderr, в файл при перенаправлении не попадёт)
 print_progress() {
     [ -t 2 ] || return
     local cur=$1 total=$2 barlen=28
@@ -87,8 +93,12 @@ print_progress() {
 }
 
 clear_line() { [ -t 2 ] && printf "\r\033[K" >&2; }
-
-# Собрать список подходящих файлов в каталоге (null-delimited)
+cleanup() {
+    clear_line
+    printf "\n${YELLOW}Поиск прерван (Ctrl+C).${RESET}\n" >&2
+    exit 130
+}
+trap cleanup INT TERM
 collect_files() {
     local dir="$1"
     [ -d "$dir" ] || return
@@ -119,13 +129,10 @@ collect_files() {
 # ─────────────────────────── СТАРТ ───────────────────────────
 printf "\n${BOLD}${CYAN}Ищем:${RESET} ${BOLD}%s${RESET}\n" "$DOMAIN"
 printf "${GREY}────────────────────────────────────────────────────────────${RESET}\n\n"
-
-# 1) Собираем список файлов (с дедупликацией)
 printf "${GREY}Собираю список файлов...${RESET}" >&2
 declare -A SEEN
 FILES=()
 
-# /etc/hosts отдельно (без расширения, find его не поймает)
 if [ -r /etc/hosts ]; then
     FILES+=( /etc/hosts ); SEEN[/etc/hosts]=1
 fi
@@ -177,7 +184,6 @@ for FILE in "${FILES[@]}"; do
 done
 clear_line
 
-# ─────────────────────────── ИТОГ ───────────────────────────
 printf "${GREY}────────────────────────────────────────────────────────────${RESET}\n"
 if [ "$FOUND_FILES" -eq 0 ]; then
     printf "${BOLD}Домен ${RED}%s${RESET}${BOLD} не найден ни в одном файле.${RESET}\n\n" "$DOMAIN"
